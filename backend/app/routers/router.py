@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/router", tags=["查询路由分发"])
 
 service = RouterService()
 
-LIST_FIELDS = ["规则编号", "匹配条件", "目标服务", "权重比例", "灰度标记", "降级服务", "重试次数", "规则状态"]
+LIST_FIELDS = ["规则编号", "匹配条件", "目标服务", "权重比例", "灰度标记", "降级服务", "重试次数", "规则状态", "版本号", "回执"]
 STATUSES = ["草稿", "生效中", "已降级", "已关闭"]
 
 
@@ -28,6 +28,21 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/dispatch")
+def dispatch_query(
+    query: str = Query(default="", description="查询条件，按路由匹配条件命中；为空时返回全量可分发规则"),
+) -> dict[str, Any]:
+    """查询路由分发：只返回生效中/已降级规则的有效目标，已关闭规则立即退出匹配。"""
+    return service.dispatch_query(query)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出查询路由分发清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "router", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -50,16 +65,23 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条路由规则执行启用规则、降级路由、关闭规则；不允许的动作会被拦下并说明原因。"""
+    """对单条路由规则执行启用规则、降级路由、关闭规则。
+
+    状态只能按 草稿→生效中→已降级→已关闭 单向推进；降级必须在 values 里带
+    明确的「降级服务」，失败时后端整体回滚并把原因原样返回，不返回伪成功。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
 
 
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出查询路由分发清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "router", "total": total, "items": items}
+@router.post("/{entry_id}/backfill", response_model=ActionResult)
+def backfill_degrade_target(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """为已降级但缺失降级服务的历史规则补齐明确目标，并同步结果缓存。"""
+    target = str(payload.values.get("降级服务") or "").strip()
+    entry, message = service.backfill_degrade_target(entry_id, target)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)

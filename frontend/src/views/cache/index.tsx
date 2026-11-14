@@ -5,12 +5,15 @@ import { request } from '@/api/client'
 const ENDPOINT = '/api/cache'
 const columns = [
   "配置编号",
+  "路由规则编号",
   "缓存键名",
   "过期秒数",
   "刷新策略",
   "预热开关",
   "容量上限",
   "淘汰算法",
+  "缓存版本",
+  "降级目标",
   "配置状态"
 ]
 const actions = [
@@ -41,12 +44,23 @@ const stats = [
 
 type Row = Record<string, string | number | null>
 
+async function readMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json()
+    if (payload?.message) return String(payload.message)
+    if (payload?.detail) return String(payload.detail)
+  } catch {
+    // 响应体不是 JSON 时退回通用提示
+  }
+  return fallback
+}
+
 export default function CacheView() {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
-  const filterFields = useMemo(() => columns.slice(0, 3), [])
+  const filterFields = useMemo(() => ["配置编号", "路由规则编号", "缓存键名"], [])
 
   const reload = useCallback(async () => {
     setErrorMessage('')
@@ -76,7 +90,7 @@ export default function CacheView() {
         body: JSON.stringify({ action }),
       })
       if (!response.ok) {
-        throw new Error('结果缓存加速动作未生效，请稍后重试')
+        throw new Error(await readMessage(response, '结果缓存加速动作未生效，请稍后重试'))
       }
       await reload()
     } catch (error) {
@@ -89,7 +103,7 @@ export default function CacheView() {
       <header className="page-head">
         <div>
           <h2>结果缓存加速管理</h2>
-          <p className="page-desc">维护查询结果的缓存参数、过期策略与预热机制，为结果缓存加速提供可验证的数据工程流程。</p>
+          <p className="page-desc">维护查询结果的缓存参数、过期策略与预热机制；缓存版本与降级目标随路由规则动作同步，两个页面显示同一份降级目标。</p>
         </div>
         <div className="page-actions">
           <button className="btn primary" type="button" onClick={() => setErrorMessage('缓存配置登记入口尚未接入审批流')}>
@@ -135,7 +149,11 @@ export default function CacheView() {
         <tbody>
           {rows.map((row) => (
             <tr key={String(row.id)}>
-              {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
+              {columns.map((column) => (
+                <td key={column}>
+                  {column === '缓存版本' && row[column] != null ? `v${String(row[column])}` : (row[column] === '' || row[column] == null ? '—' : String(row[column]))}
+                </td>
+              ))}
               <td className="row-actions">
                 {actions.map((action) => (
                   <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>

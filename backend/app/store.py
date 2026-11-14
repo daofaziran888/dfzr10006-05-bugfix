@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from app.seed import SEED_ROWS
@@ -14,6 +15,18 @@ class Store:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        # 每个业务模块一把可重入锁：状态机动作做“检查-改写”临界区，
+        # 保证两个入口并发切换同一条规则时只有一个版本落库。
+        self._locks: dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
+
+    def lock(self, module: str) -> threading.RLock:
+        with self._locks_guard:
+            module_lock = self._locks.get(module)
+            if module_lock is None:
+                module_lock = threading.RLock()
+                self._locks[module] = module_lock
+            return module_lock
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
